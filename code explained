@@ -1,0 +1,376 @@
+import os
+
+# Check the directory structure
+print(os.listdir("chest_xray"))
+print(os.listdir("chest_xray/train"))
+print(os.listdir("chest_xray/test"))
+
+# Results it says 
+['test', '__MACOSX', 'train', 'val', 'chest_xray']
+['NORMAL', 'PNEUMONIA']
+['NORMAL', 'PNEUMONIA']
+
+import os
+import time
+import json
+import numpy as np
+import matplotlib.pyplot as plt
+import tensorflow as tf
+
+from tensorflow import keras
+from tensorflow.keras import layers
+from sklearn.metrics import classification_report, confusion_matrix
+
+# Set random seeds for reproducibility
+print("1. Imports finished")
+
+# we will use tf.data.AUTOTUNE for efficient data loading and prefetching
+AUTOTUNE = tf.data.AUTOTUNE
+
+# Define constants
+SEED = 123
+# Image size for EfficientNetB0 is 224x224
+IMG_SIZE = 224
+
+# We will use a small batch size to avoid OOM errors, especially if running on CPU
+BATCH_SIZE = 16
+
+# Training parameters
+EPOCHS = 10
+
+# We will use a small learning rate for fine-tuning
+LEARNING_RATE = 1e-4
+
+# Define dataset paths
+DATASET_ROOT = "chest_xray/chest_xray"
+
+# Check if dataset directories exist
+TRAIN_DIR = os.path.join(DATASET_ROOT, "train")
+
+# We will use the test set as is, without a separate validation set, since the train_ds loader will handle the split
+TEST_DIR = os.path.join(DATASET_ROOT, "test")
+
+# Check if directories exist
+print("2. Dataset paths set")
+
+# Print dataset paths for verification
+print("TRAIN_DIR:", TRAIN_DIR)
+
+# Note: The test directory is often smaller 
+# it may not have a separate validation set, 
+# so we will use it as is for testing after training on the training set.
+print("TEST_DIR:", TEST_DIR)
+
+
+# Function to count images in each class for a given directory
+def count_images_by_class(directory):
+    counts = {}
+    # We will sort the class names to ensure consistent order
+    for class_name in sorted(os.listdir(directory)):
+        # We will check if the path is a directory to avoid counting any non-directory files
+        class_path = os.path.join(directory, class_name)
+        # We will count only image files with common extensions
+        if os.path.isdir(class_path):
+            image_count = len([
+                # We will check for common image file extensions to count only valid images
+                f for f in os.listdir(class_path)
+                # We will check for common image file extensions to count only valid images
+                if f.lower().endswith((".jpeg", ".jpg", ".png"))
+            ])
+            # We will store the count in the dictionary with the class name as the key
+            counts[class_name] = image_count
+            # We will print the count for each class for debugging purposes
+    return counts
+
+# Function to print class distribution in a readable format
+def print_distribution(name, counts):
+    # We will calculate the total number of images across all classes to compute percentages
+    total = sum(counts.values())
+    # We will print the distribution of images for each class along with the percentage of the total
+    print(f"\n{name} distribution:")
+    # We will sort the classes by name to ensure consistent output
+    for cls, count in counts.items():
+        # We will calculate the percentage of images for this class relative to the total number of images
+        pct = (count / total) * 100
+        # We will print the class name, count, and percentage in a formatted string for readability
+        print(f"{cls}: {count} images ({pct:.2f}%)")
+        # We will print the total number of images at the end for reference
+    print("Total:", total)
+
+# We will start by counting the number of images in each class for both the training and test datasets to understand the class distribution and check for any imbalance issues that might affect model training.
+print("3. Counting images")
+# We will call the count_images_by_class function for both the training and test directories to get the counts of images for each class, and then we will print the distributions using the print_distribution function for better visualization of the class balance in our datasets.
+train_counts = count_images_by_class(TRAIN_DIR)
+# We will call the count_images_by_class function for both the training and test directories to get the counts of images for each class, and then we will print the distributions using the print_distribution function for better visualization of the class balance in our datasets.
+test_counts = count_images_by_class(TEST_DIR)
+
+print("4. Image counting done")
+# We will print the class distribution for both the training and test datasets to check for any class imbalance issues that might affect model training. This will help us understand if we need to apply any techniques to address class imbalance, such as class weighting or data augmentation.
+print_distribution("Train", train_counts)
+# We will print the class distribution for both the training and test datasets to check for any class imbalance issues that might affect model training. This will help us understand if we need to apply any techniques to address class imbalance, such as class weighting or data augmentation.
+print_distribution("Test", test_counts)
+
+
+print("5. Loading datasets")
+
+# We will use the keras.utils.image_dataset_from_directory function to load the training, validation, and test datasets from their respective directories. This function will automatically label the images based on the directory structure and will allow us to specify parameters such as image size, batch size, and whether to shuffle the data. We will also use a validation split for the training dataset to create a separate validation set for model evaluation during training.
+train_ds = keras.utils.image_dataset_from_directory(
+    # We will use the keras.utils.image_dataset_from_directory function to load the training, 
+    # validation, and test datasets from their respective directories. This function will automatically label the images based on the directory structure and will allow us to specify parameters such as image size, batch size, and whether to shuffle the data. We will also use a validation split for the training dataset to create a separate validation set for model evaluation during training.
+    TRAIN_DIR,
+    # We will use the keras.utils.image_dataset_from_directory function to load the training, 
+    # validation, and test datasets from their respective directories. This function will automatically label the images based on the directory structure and will allow us to specify parameters such as image size, batch size, and whether to shuffle the data. We will also use a validation split for the training dataset to create a separate validation set for model evaluation during training.
+    validation_split=0.2,
+    # We will use the keras.utils.image_dataset_from_directory function to load the training, validation, and test datasets from their respective directories. This function will automatically label the images based on the directory structure and will allow us to specify parameters such as image size, batch size, and whether to shuffle the data. We will also use a validation split for the training dataset to create a separate validation set for model evaluation during training.
+    subset="training",
+    seed=SEED,
+    image_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    label_mode="int"
+)
+
+val_ds = keras.utils.image_dataset_from_directory(
+    TRAIN_DIR,
+    validation_split=0.2,
+    subset="validation",
+    seed=SEED,
+    image_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    label_mode="int"
+)
+
+test_ds = keras.utils.image_dataset_from_directory(
+    TEST_DIR,
+    image_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    label_mode="int"
+)
+
+# The datasets loaded by image_dataset_from_directory are batched, 
+# but for some operations like data augmentation and class weighting, 
+# we need to unbatch them first. After unbatching, we will batch them again with the specified batch size and set drop_remainder=True to ensure that all batches have the same size, which is important for training stability and performance.
+train_ds = train_ds.unbatch().batch(BATCH_SIZE, drop_remainder=True)
+val_ds = val_ds.unbatch().batch(BATCH_SIZE, drop_remainder=True)
+test_ds = test_ds.unbatch().batch(BATCH_SIZE, drop_remainder=True)
+
+class_names = train_ds.element_spec[1].dtype
+print("6. Datasets loaded")
+
+# get real class names
+temp_ds = keras.utils.image_dataset_from_directory(
+    TRAIN_DIR,
+    validation_split=0.2,
+    subset="training",
+    seed=SEED,
+    image_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    label_mode="int"
+)
+class_names = temp_ds.class_names
+num_classes = len(class_names)
+
+print("7. Classes found:", class_names)
+
+# We will define a data augmentation pipeline using keras.Sequential to apply random transformations to the training images, such as horizontal flipping, random rotation, random zoom, and random contrast adjustments. This will help improve the model's generalization by introducing variability in the training data. We will then prepare the data pipelines for training, validation, and testing by caching, shuffling (for training), and prefetching the datasets for optimal performance during model training and evaluation.
+augmentation = keras.Sequential([
+    # We will define a data augmentation pipeline using keras.Sequential to apply random transformations to the training images, such as horizontal flipping, random rotation, random zoom, and random contrast adjustments. This will help improve the model's generalization by introducing variability in the training data. We will then prepare the data pipelines for training, validation, and testing by caching, shuffling (for training), and prefetching the datasets for optimal performance during model training and evaluation.
+    layers.RandomFlip("horizontal"),
+    layers.RandomRotation(0.05),
+    layers.RandomZoom(0.1),
+    layers.RandomContrast(0.1),
+], name="augmentation")
+
+train_ds = train_ds.cache().shuffle(1000).prefetch(AUTOTUNE)
+val_ds = val_ds.cache().prefetch(AUTOTUNE)
+test_ds = test_ds.cache().prefetch(AUTOTUNE)
+
+print("8. Data pipeline ready")
+
+# We will take one batch from the training dataset and print the shapes of the images and labels to verify that the data is being loaded correctly and that the shapes are as expected for model training. 
+# This will help us catch any issues with data loading or preprocessing before we start training the model.
+for images, labels in train_ds.take(1):
+    print("9. Debug batch shapes")
+    print("Images shape:", images.shape)
+    print("Labels shape:", labels.shape)
+
+
+# We will compute class weights based on the counts of images in each class in the training dataset to address any class imbalance issues during model training. 
+# The class weights will be calculated using the formula: weight = total_images / (num_classes * count_of_images_in_class), 
+# which will give higher weights to underrepresented classes and help the model learn better from those classes during training.
+def compute_class_weights(counts, class_names):
+    total = sum(counts.values())
+    n = len(class_names)
+    weights = {}
+    for i, cls in enumerate(class_names):
+        weights[i] = total / (n * counts[cls])
+    return weights
+
+# We will compute class weights based on the counts of images in each class in the training dataset to address any class imbalance issues during model training. 
+# The class weights will be calculated using the formula: weight = total_images / (num_classes * count_of_images_in_class), which will give higher weights to underrepresented classes and help the model learn better from those classes during training.
+class_weights = compute_class_weights(train_counts, class_names)
+print("10. Class weights computed:", class_weights)
+
+
+print("11. Building model")
+
+# We will build a convolutional neural network model using the EfficientNetB0 architecture as the base model for feature extraction. 
+# We will add a data augmentation layer at the input, followed by the EfficientNetB0 base model with pretrained ImageNet weights. 
+# We will freeze the base model layers to prevent them from being updated during training. After the base model, we will add global average pooling, batch normalization, dropout, and dense layers to create the final classification head. The output layer will have a softmax activation function for multi-class classification. Finally, we will compile the model with an appropriate optimizer, loss function, and evaluation metrics.
+inputs = keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3))
+x = augmentation(inputs)
+
+# We will build a convolutional neural network model using the EfficientNetB0 architecture as the base model for feature extraction. 
+# We will add a data augmentation layer at the input, followed by the EfficientNetB0 base model with pretrained ImageNet weights. 
+# We will freeze the base model layers to prevent them from being updated during training. After the base model, we will add global average pooling, batch normalization, dropout, and dense layers to create the final classification head. The output layer will have a softmax activation function for multi-class classification. Finally, we will compile the model with an appropriate optimizer, loss function, and evaluation metrics.
+base_model = keras.applications.EfficientNetB0(
+    include_top=False,
+    weights="imagenet",
+    input_shape=(IMG_SIZE, IMG_SIZE, 3)
+)
+
+# We will build a convolutional neural network model using the EfficientNetB0 architecture as the base model for feature extraction.
+base_model.trainable = False
+
+x = keras.applications.efficientnet.preprocess_input(x)
+x = base_model(x, training=False)
+x = layers.GlobalAveragePooling2D()(x)
+x = layers.BatchNormalization()(x)
+x = layers.Dropout(0.35)(x)
+x = layers.Dense(128, activation="relu")(x)
+x = layers.Dropout(0.25)(x)
+outputs = layers.Dense(num_classes, activation="softmax")(x)
+
+model = keras.Model(inputs, outputs)
+
+model.compile(
+    optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
+    loss="sparse_categorical_crossentropy",
+    metrics=["accuracy"]
+)
+
+print("12. Model built")
+model.summary()
+
+# We will define callbacks for early stopping and model checkpointing to monitor the validation loss during training. 
+# The EarlyStopping callback will stop training if the validation loss does not improve for 3 consecutive epochs and will restore the best weights. 
+# The ModelCheckpoint callback will save the best model based on the lowest validation loss during training. 
+# These callbacks will help us prevent overfitting and ensure that we save the best performing model for later evaluation and inference.
+callbacks = [
+    keras.callbacks.EarlyStopping(
+        monitor="val_loss",
+        patience=3,
+        restore_best_weights=True
+    ),
+    keras.callbacks.ModelCheckpoint(
+        "best_model.keras",
+        monitor="val_loss",
+        save_best_only=True
+    )
+]
+
+print("13. Starting training")
+
+# We will start the training process by calling the fit method on the model with the training dataset, validation dataset, number of epochs, class weights, and callbacks.
+# We will also measure the training time by recording the start and end times around the fit method
+start_time = time.time()
+
+history = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=EPOCHS,
+    class_weight=class_weights,
+    callbacks=callbacks
+)
+
+end_time = time.time()
+training_time = end_time - start_time
+
+print("14. Training finished")
+print("Training time (seconds):", training_time)
+print("Training time (minutes):", training_time / 60)
+
+print("15. Evaluating on test set")
+test_results = model.evaluate(test_ds)
+print("Test results:", test_results)
+
+print("16. Making predictions")
+y_true = np.concatenate([y.numpy() for _, y in test_ds])
+y_probs = model.predict(test_ds)
+y_pred = np.argmax(y_probs, axis=1)
+
+print("\n17. Classification Report")
+print(classification_report(y_true, y_pred, target_names=class_names))
+
+print("\n18. Confusion Matrix")
+print(confusion_matrix(y_true, y_pred))
+
+print("19. Plotting graphs")
+
+# We will plot the training and validation accuracy and loss curves over the epochs to visualize the model's performance during training. 
+# This will help us understand if the model is overfitting, underfitting, or training well. 
+# We will also save the training history to a JSON file for later analysis and reference.
+plt.figure(figsize=(8, 5))
+plt.plot(history.history["accuracy"], label="train_accuracy")
+plt.plot(history.history["val_accuracy"], label="val_accuracy")
+plt.title("Accuracy")
+plt.xlabel("Epoch")
+plt.ylabel("Accuracy")
+plt.legend()
+plt.show()
+
+plt.figure(figsize=(8, 5))
+plt.plot(history.history["loss"], label="train_loss")
+plt.plot(history.history["val_loss"], label="val_loss")
+plt.title("Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.legend()
+plt.show()
+
+# We will save the training history to a JSON file for later analysis and reference. 
+# Since the history object contains lists of metrics for each epoch, we will convert them to a format that can be easily saved to JSON by converting the metric values to floats. 
+# We will create a dictionary to store the history and then use the json module to save it to a file named
+history_to_save = {}
+for key, value in history.history.items():
+    history_to_save[key] = [float(v) for v in value]
+
+with open("history.json", "w") as f:
+    json.dump(history_to_save, f)
+
+print("20. Saved best_model.keras and history.json")
+
+
+import tensorflow as tf
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
+
+# We will define a function to generate Grad-CAM heatmaps for a given input image, 
+# model, and the name of the last convolutional layer. 
+# The function will create a model that outputs both the activations of the last convolutional layer and the final predictions. 
+# It will then compute the gradients of the predicted class with respect to the activations of the last convolutional layer, 
+# pool the gradients, and create a heatmap by
+
+def make_gradcam_heatmap(img_array, model, last_conv_layer_name):
+    grad_model = tf.keras.models.Model(
+        [model.inputs],
+        [model.get_layer(last_conv_layer_name).output, model.output]
+    )
+
+    with tf.GradientTape() as tape:
+        conv_outputs, predictions = grad_model(img_array)
+        loss = predictions[:, np.argmax(predictions[0])]
+
+    grads = tape.gradient(loss, conv_outputs)
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+
+    conv_outputs = conv_outputs[0]
+    heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
+    heatmap = tf.squeeze(heatmap)
+
+    heatmap = tf.maximum(heatmap, 0) / tf.math.reduce_max(heatmap)
+    return heatmap.numpy()
